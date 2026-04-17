@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>挪箭头 - 全功能开发版</title>
+    <style>
+        :root { --bg-color: #0d0e15; --grid-line: #1c1c28; --panel-bg: #151620; --text-color: #e0e0e0; }
+        body { font-family: 'Segoe UI', sans-serif; background-color: var(--bg-color); color: var(--text-color); display: flex; flex-direction: column; align-items: center; margin: 0; padding: 20px; user-select: none; }
+        .controls { background: var(--panel-bg); padding: 15px 25px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); display: flex; gap: 10px; align-items: center; margin-bottom: 20px; border: 1px solid #333; flex-wrap: wrap; }
+        input[type="number"] { width: 45px; padding: 5px; background: #222; border: 1px solid #444; color: #fff; border-radius: 4px; text-align: center; }
+        button { padding: 8px 14px; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; transition: 0.2s; font-size: 13px; }
+        .btn-gen { background: #ff007f; color: white; }
+        .btn-gen:hover { background: #ff3399; }
+        .btn-add { background: #ffaa00; color: #000; }
+        .btn-add:hover { background: #ffbb33; }
+        .btn-auto { background: #00e5ff; color: #000; }
+        .btn-reset { background: #555; color: #fff; }
+        #log { font-size: 13px; font-weight: bold; min-width: 220px; color: #ffcc00; }
+        #game-board { position: relative; background-color: var(--grid-line); border: 2px solid #333; box-shadow: 0 0 30px rgba(0,0,0,0.8); overflow: hidden; }
+        .arrow-group { position: absolute; transition: transform 0.4s cubic-bezier(0.25, 0.8, 0.25, 1), opacity 0.3s; cursor: pointer; z-index: 5; }
+        .part { position: absolute; width: 38px; height: 38px; box-sizing: border-box; border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; display: flex; justify-content: center; align-items: center; }
+        .head-icon { width: 0; height: 0; border-left: 10px solid transparent; border-right: 10px solid transparent; border-bottom: 16px solid #fff; }
+        @keyframes shake { 0%, 100% { transform: translateX(0); } 25% { transform: translateX(-4px); } 75% { transform: translateX(4px); } }
+        .shake { animation: shake 0.3s; filter: brightness(1.5) saturate(1.5); }
+    </style>
+</head>
+<body>
+
+    <div class="controls">
+        <label>R: <input type="number" id="input-rows" value="10"></label>
+        <label>C: <input type="number" id="input-cols" value="10"></label>
+        <label>长度权重: <input type="text" id="input-length-weights" value="1:8,2:20,3:30,4:24,5:12,6:6" style="width:240px;text-align:left;"></label>
+        <label>弯折权重: <input type="text" id="input-bend-weights" value="0:40,1:35,2:20,3:5" style="width:180px;text-align:left;"></label>
+        <button class="btn-reset" onclick="resetBoard()">🧹 重置</button>
+        <button class="btn-gen" onclick="fillFullMap()">🚀 自动铺满全图</button>
+        <button class="btn-add" onclick="addSingleArrow()">➕ 随机加一根</button>
+        <button class="btn-auto" onclick="autoSolve()">🤖 自动演示</button>
+        <div id="log">就绪</div>
+    </div>
+
+    <div id="game-board"></div>
+
+<script>
+    const NEON_COLORS = ['#ff0055', '#00e5ff', '#a600ff', '#ffaa00', '#00ff66', '#ff5500', '#f0f'];
+    const CELL_SIZE = 40;
+    const DEFAULT_LENGTH_WEIGHT_TEXT = '1:8,2:20,3:30,4:24,5:12,6:6';
+    const DEFAULT_BEND_WEIGHT_TEXT = '0:40,1:35,2:20,3:5';
+    const EXIT_STEP_MS = 100;
+    let currentArrows = [];
+    let gridMap = [];
+    let rows, cols;
+    let isPlaying = true;
+
+    // 1. 初始化地图
+    function resetBoard() {
+        rows = parseInt(document.getElementById('input-rows').value);
+        cols = parseInt(document.getElementById('input-cols').value);
+        const board = document.getElementById('game-board');
+        board.style.width = `${cols * CELL_SIZE}px`;
+        board.style.height = `${rows * CELL_SIZE}px`;
+        board.innerHTML = '';
+        gridMap = Array.from({length: rows}, () => Array(cols).fill(null));
+        currentArrows = [];
+        isPlaying = true;
+        updateLog("地图已清空");
+    }
+
+    // 2. 🚀 核心功能：全自动铺满
+    async function fillFullMap() {
+        resetBoard();
+        updateLog("正在暴力填充中...");
+        let attempts = 0;
+        let maxAttempts = rows * cols; // 保护性上限
+
+        // 持续尝试添加，直到连续多次添加失败（意味着真的塞不下了）
+        let failCount = 0;
+        while (failCount < 20) {
+            let success = await performSingleAdd(false); // 不更新UI太频繁
+            if (success) {
+                failCount = 0;
+            } else {
+                failCount++;
+            }
+            // 每添加几个暂停一下，防止浏览器假死
+            if (currentArrows.length % 10 === 0) await new Promise(r => setTimeout(r, 0));
+        }
+        
+        // 最后统一渲染
+        renderAll();
+        updateLog(`✅ 填充完毕，共 ${currentArrows.length} 根箭头`, "#00ff66");
+    }
+
+    // 3. ➕ 单次添加逻辑
+    async function addSingleArrow() {
+        if (!gridMap.length) resetBoard();
+        let success = await performSingleAdd(true);
+        if (success) {
+            updateLog(`✅ 已添加第 ${currentArrows.length} 根`, "#00ff66");
+        } else {
+            updateLog("⚠️ 找不到合法位置（可能已满或会产生死锁）", "#ff8800");
+        }
+    }
+
+    // 执行添加的核心算法
+    async function performSingleAdd(shouldRender = true) {
+        const lengthWeights = readWeightedConfig('input-length-weights', DEFAULT_LENGTH_WEIGHT_TEXT);
+        const bendWeights = readWeightedConfig('input-bend-weights', DEFAULT_BEND_WEIGHT_TEXT);
+
+        let emptyCells = [];
+        for (let r = 0; r < rows; r++) {
+            for (let c = 0; c < cols; c++) {
+                if (gridMap[r][c] === null) {
+                    let dist = Math.min(r, rows - 1 - r, c, cols - 1 - c);
+                    emptyCells.push({r, c, dist});
+                }
+            }
+        }
+        if (emptyCells.length === 0) return false;
+
+        // 优先从边缘开始尝试，增加填充密度
+        emptyCells.sort((a, b) => a.dist - b.dist + (Math.random() * 0.5));
+        const maxLenAllowed = Math.min(rows * cols, 20);
+        const candidateLens = Object.keys(lengthWeights)
+            .map(Number)
+            .filter(len => Number.isInteger(len) && len >= 1 && len <= maxLenAllowed);
+        const fallbackLens = [4, 3, 2, 1].filter(len => len <= maxLenAllowed);
+        const lensToUse = candidateLens.length ? candidateLens : fallbackLens;
+        
+        for (let start of emptyCells.slice(0, 10)) { // 每次从最边缘的一批格子里选
+            const lenOrder = buildWeightedOrder(lensToUse, lengthWeights);
+            for (let len of lenOrder) {
+                const maxBendForLen = Math.max(0, len - 2);
+                const candidateBends = Object.keys(bendWeights)
+                    .map(Number)
+                    .filter(b => Number.isInteger(b) && b >= 0 && b <= maxBendForLen);
+                const fallbackBends = Array.from({length: maxBendForLen + 1}, (_, i) => i);
+                const bendsToUse = candidateBends.length ? candidateBends : fallbackBends;
+                const bendOrder = buildWeightedOrder(bendsToUse, bendWeights);
+
+                for (let bendCount of bendOrder) {
+                    let paths = getPathsWithBend(start.r, start.c, len, bendCount, 120);
+                    if (!paths.length) continue;
+                    paths.sort(() => Math.random() - 0.5);
+
+                    for (let path of paths) {
+                        let dirs = ['U', 'D', 'L', 'R'].sort(() => Math.random() - 0.5);
+                        for (let dir of dirs) {
+                            if (validateAndStore(path, dir)) {
+                                if (shouldRender) renderArrow(currentArrows[currentArrows.length-1]);
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    // 验证死锁并存入数据
+    function validateAndStore(path, dir) {
+        let ray = getRay(path[0].r, path[0].c, dir);
+        if (ray.some(r => path.some(p => p.r === r.r && p.c === r.c))) return false;
+
+        let newId = currentArrows.length;
+        let adj = buildAdjTable(currentArrows, gridMap);
+        adj[newId] = [];
+
+        // 射线被谁挡？
+        for (let rCell of ray) {
+            let oid = gridMap[rCell.r][rCell.c];
+            if (oid !== null) { 
+                if (!adj[oid]) adj[oid]=[]; 
+                if (!adj[oid].includes(newId)) adj[oid].push(newId); 
+            }
+        }
+        // 身体挡了谁？
+        for (let old of currentArrows) {
+            if (old.ray.some(rc => path.some(pc => pc.r === rc.r && pc.c === rc.c))) {
+                if (!adj[newId].includes(old.id)) adj[newId].push(old.id);
+            }
+        }
+
+        if (hasCycle(adj, newId + 1)) return false;
+
+        // 通过验证，记录数据
+        let arrow = { id: newId, dir, path, ray, color: NEON_COLORS[newId % NEON_COLORS.length] };
+        currentArrows.push(arrow);
+        path.forEach(p => gridMap[p.r][p.c] = newId);
+        return true;
+    }
+
+    // --- 基础工具函数 ---
+
+    function buildAdjTable(arrows, grid) {
+        let adj = {};
+        arrows.forEach(a => {
+            adj[a.id] = adj[a.id] || [];
+            a.ray.forEach(rc => {
+                let oid = grid[rc.r][rc.c];
+                if (oid !== null && oid !== a.id) {
+                    adj[oid] = adj[oid] || [];
+                    if (!adj[oid].includes(a.id)) adj[oid].push(a.id);
+                }
+            });
+        });
+        return adj;
+    }
+
+    function hasCycle(adj, n) {
+        let visited = new Array(n + 1).fill(0);
+        function dfs(u) {
+            visited[u] = 1;
+            for (let v of (adj[u] || [])) {
+                if (visited[v] === 1) return true;
+                if (visited[v] === 0 && dfs(v)) return true;
+            }
+            visited[u] = 2; return false;
+        }
+        for (let key in adj) {
+            let i = parseInt(key);
+            if (visited[i] === 0 && dfs(i)) return true;
+        }
+        return false;
+    }
+
+    function getPathsWithBend(r, c, len, targetBends, maxPaths = 120) {
+        let res = [];
+        function walk(cr, cc, p, prevDir, bends) {
+            if (res.length >= maxPaths) return;
+            if (p.length === len) {
+                if (bends === targetBends) res.push([...p]);
+                return;
+            }
+            let nexts = [
+                {r:cr-1, c:cc, dir:'U'},
+                {r:cr+1, c:cc, dir:'D'},
+                {r:cr, c:cc-1, dir:'L'},
+                {r:cr, c:cc+1, dir:'R'}
+            ];
+            nexts.sort(() => Math.random() - 0.5);
+            for (let n of nexts) {
+                const nextBends = prevDir && prevDir !== n.dir ? bends + 1 : bends;
+                if (nextBends > targetBends) continue;
+                if (n.r>=0 && n.r<rows && n.c>=0 && n.c<cols && gridMap[n.r][n.c]===null) {
+                    if (!p.some(i => i.r===n.r && i.c===n.c)) {
+                        p.push({r:n.r, c:n.c});
+                        walk(n.r, n.c, p, n.dir, nextBends);
+                        p.pop();
+                    }
+                }
+            }
+        }
+        walk(r, c, [{r, c}], null, 0);
+        return res;
+    }
+
+    function readWeightedConfig(inputId, defaultText) {
+        const el = document.getElementById(inputId);
+        if (!el) return parseWeightedText(defaultText);
+        const text = (el.value || '').trim();
+        const parsed = parseWeightedText(text);
+        if (Object.keys(parsed).length === 0) {
+            el.value = defaultText;
+            return parseWeightedText(defaultText);
+        }
+        return parsed;
+    }
+
+    function parseWeightedText(text) {
+        const out = {};
+        if (!text) return out;
+        const pairs = text.split(',');
+        for (let raw of pairs) {
+            const part = raw.trim();
+            if (!part) continue;
+            const [kText, wText] = part.split(':').map(s => (s || '').trim());
+            const key = Number(kText);
+            const weight = Number(wText);
+            if (!Number.isFinite(key) || !Number.isFinite(weight) || weight <= 0) continue;
+            out[Math.floor(key)] = weight;
+        }
+        return out;
+    }
+
+    function buildWeightedOrder(items, weightMap) {
+        const pool = [...items];
+        const order = [];
+        while (pool.length) {
+            let total = 0;
+            for (let item of pool) total += (weightMap[item] || 0);
+            if (total <= 0) {
+                pool.sort(() => Math.random() - 0.5);
+                order.push(...pool);
+                break;
+            }
+            let pick = Math.random() * total;
+            let chosenIdx = 0;
+            for (let i = 0; i < pool.length; i++) {
+                pick -= (weightMap[pool[i]] || 0);
+                if (pick <= 0) { chosenIdx = i; break; }
+            }
+            order.push(pool[chosenIdx]);
+            pool.splice(chosenIdx, 1);
+        }
+        return order;
+    }
+
+    function getRay(r, c, dir) {
+        let ry = [], cr = r, cc = c;
+        while (true) {
+            if (dir === 'U') cr--; else if (dir === 'D') cr++; else if (dir === 'L') cc--; else if (dir === 'R') cc++;
+            if (cr<0 || cr>=rows || cc<0 || cc>=cols) break;
+            ry.push({r: cr, c: cc});
+        }
+        return ry;
+    }
+
+    function renderAll() {
+        document.getElementById('game-board').innerHTML = '';
+        currentArrows.forEach(renderArrow);
+    }
+
+    function renderArrow(a) {
+        let g = document.createElement('div');
+        g.className = 'arrow-group'; g.id = `a-${a.id}`;
+        a.path.forEach((p, i) => {
+            let b = document.createElement('div');
+            b.className = 'part'; b.style.left = `${p.c*CELL_SIZE}px`; b.style.top = `${p.r*CELL_SIZE}px`;
+            b.style.backgroundColor = a.color; b.style.boxShadow = `0 0 10px ${a.color}88`;
+            if (i === 0) {
+                let h = document.createElement('div'); h.className = 'head-icon';
+                let deg = {U:0, D:180, L:-90, R:90}[a.dir];
+                h.style.transform = `rotate(${deg}deg)`;
+                b.appendChild(h);
+            }
+            g.appendChild(b);
+        });
+        g.onclick = () => tryRemove(a);
+        document.getElementById('game-board').appendChild(g);
+    }
+
+    async function tryRemove(a) {
+        if (!isPlaying) return;
+        let blocked = a.ray.some(rc => gridMap[rc.r][rc.c] !== null && gridMap[rc.r][rc.c] !== a.id);
+        let el = document.getElementById(`a-${a.id}`);
+        if (blocked) {
+            el.classList.remove('shake'); void el.offsetWidth; el.classList.add('shake');
+        } else {
+            a.path.forEach(p => gridMap[p.r][p.c] = null);
+            currentArrows = currentArrows.filter(i => i.id !== a.id);
+            await animateSnakeExit(a, el);
+            if (currentArrows.length === 0) updateLog("🎉 通关！", "#00ffcc");
+        }
+    }
+
+    async function animateSnakeExit(a, el) {
+        if (!el) return;
+        const parts = Array.from(el.querySelectorAll('.part'));
+        if (!parts.length) {
+            el.remove();
+            return;
+        }
+
+        const delta = { U: {r: -1, c: 0}, D: {r: 1, c: 0}, L: {r: 0, c: -1}, R: {r: 0, c: 1} }[a.dir];
+        let body = a.path.map(p => ({r: p.r, c: p.c}));
+        const totalSteps = Math.max(rows, cols) + body.length + 2;
+
+        parts.forEach(part => {
+            part.style.transition = `left ${EXIT_STEP_MS}ms cubic-bezier(0.22, 0.61, 0.36, 1), top ${EXIT_STEP_MS}ms cubic-bezier(0.22, 0.61, 0.36, 1), opacity ${EXIT_STEP_MS}ms ease`;
+            part.style.willChange = 'left, top, opacity';
+            part.style.backfaceVisibility = 'hidden';
+            part.style.transform = 'translateZ(0)';
+        });
+
+        for (let step = 0; step < totalSteps; step++) {
+            const prev = body.map(p => ({r: p.r, c: p.c}));
+            body[0] = { r: prev[0].r + delta.r, c: prev[0].c + delta.c };
+            for (let i = 1; i < body.length; i++) body[i] = prev[i - 1];
+
+            await nextFrame();
+            for (let i = 0; i < parts.length; i++) {
+                const cell = body[i];
+                parts[i].style.left = `${cell.c * CELL_SIZE}px`;
+                parts[i].style.top = `${cell.r * CELL_SIZE}px`;
+                parts[i].style.opacity = isOutside(cell) ? '0' : '1';
+            }
+            await waitForPartTransition(parts[0], EXIT_STEP_MS + 30);
+        }
+        el.remove();
+    }
+
+    function isOutside(cell) {
+        return cell.r < 0 || cell.r >= rows || cell.c < 0 || cell.c >= cols;
+    }
+
+    function nextFrame() {
+        return new Promise(resolve => requestAnimationFrame(() => resolve()));
+    }
+
+    function waitForPartTransition(part, fallbackMs) {
+        return new Promise(resolve => {
+            let done = false;
+            const finish = () => {
+                if (done) return;
+                done = true;
+                part.removeEventListener('transitionend', onEnd);
+                resolve();
+            };
+            const onEnd = (e) => {
+                if (e.propertyName === 'left' || e.propertyName === 'top') finish();
+            };
+            part.addEventListener('transitionend', onEnd);
+            setTimeout(finish, fallbackMs);
+        });
+    }
+
+    function autoSolve() {
+        isPlaying = false;
+        let running = false;
+        let timer = setInterval(async () => {
+            if (running) return;
+            let target = currentArrows.find(a => !a.ray.some(rc => gridMap[rc.r][rc.c] !== null && gridMap[rc.r][rc.c] !== a.id));
+            if (target) {
+                running = true;
+                isPlaying = true;
+                await tryRemove(target);
+                isPlaying = false;
+                running = false;
+            }
+            else { clearInterval(timer); isPlaying = true; updateLog("演示结束"); }
+        }, EXIT_STEP_MS + 40);
+    }
+
+    function updateLog(msg, color="#ffcc00") {
+        const log = document.getElementById('log');
+        log.innerText = msg; log.style.color = color;
+    }
+
+    // 初始化运行一次
+    resetBoard();
+    fillFullMap();
+</script>
+</body>
+</html>
