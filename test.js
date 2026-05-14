@@ -807,7 +807,7 @@ function exportLevel() {
         Arrows: currentArrows.map(a => ({
             Id: a.id,
             Dir: a.dir,
-            Path: a.path,
+            Path: a.path.map(p => `${p.r}_${p.c}`),
             Color: a.color
         }))
     };
@@ -1693,11 +1693,8 @@ function validateLevelJson(data) {
         // 檢查Path中的每個座標
         for (let j = 0; j < arrow.Path.length; j++) {
             const pos = arrow.Path[j];
-            if (typeof pos !== 'object' || pos === null) {
-                return { valid: false, message: `Arrows[${i}].Path[${j}]必須是對象` };
-            }
-            if (typeof pos.r !== 'number' || typeof pos.c !== 'number') {
-                return { valid: false, message: `Arrows[${i}].Path[${j}]必須包含數字類型的r和c屬性` };
+            if (typeof pos !== 'string' || !/^\d+_\d+$/.test(pos)) {
+                return { valid: false, message: `Arrows[${i}].Path[${j}]必須是"r_c"格式的字符串，如"0_1"` };
             }
         }
         
@@ -1740,14 +1737,18 @@ async function importLevel(data) {
         // 生成新ID
         const newId = currentArrows.length;
         
+        // 解析 "r_c" 字符串坐標
+        const parsePos = s => { const [r, c] = s.split('_').map(Number); return {r, c}; };
+        
         // 計算射線
-        const ray = getRay(arrowData.Path[0].r, arrowData.Path[0].c, arrowData.Dir);
+        const firstPos = parsePos(arrowData.Path[0]);
+        const ray = getRay(firstPos.r, firstPos.c, arrowData.Dir);
         
         // 創建箭頭對象
         const arrow = {
             id: newId,
             dir: arrowData.Dir,
-            path: arrowData.Path.map(p => ({r: p.r, c: p.c})),
+            path: arrowData.Path.map(parsePos),
             ray: ray,
             color: arrowData.Color || NEON_COLORS[newId % NEON_COLORS.length]
         };
