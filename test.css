@@ -22,6 +22,9 @@ button:active { transform: scale(0.95); }
 .btn-clear-block { background: #ff4444; color: #fff; }
 .btn-clear-block:hover { background: #ff6666; }
 .btn-clear-block.active { background: #ff6666; box-shadow: 0 0 10px #ff4444; }
+.btn-fill-block { background: #6600cc; color: #fff; }
+.btn-fill-block:hover { background: #7722dd; }
+.btn-fill-block.active { background: #8833ee; box-shadow: 0 0 10px #6600cc; }
 .btn-export { background: #00cc66; color: #fff; }
 .btn-export:hover { background: #00ff80; }
 .btn-export.active { background: #00ff80; box-shadow: 0 0 10px #00cc66; }

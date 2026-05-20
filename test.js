@@ -36,6 +36,36 @@ function clearBlockedCells() {
     updateLog("已清除所有禁区", "#ff4444");
 }
 
+// 一键填充禁区：将当前地图中的所有空格设为禁区
+function fillEmptyCellsAsBlocked() {
+    if (!gridMap.length) {
+        updateLog("⚠️ 请先初始化地图", "#ff8800");
+        return;
+    }
+    let added = 0;
+    for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+            const key = `${r},${c}`;
+            if (gridMap[r][c] === null && !blockedCells.has(key)) {
+                blockedCells.add(key);
+                added++;
+            }
+        }
+    }
+    renderBlockedCells();
+    // 如果当前在禁区选择模式，同步更新覆盖层样式
+    if (blockMode) {
+        document.querySelectorAll('.cell-overlay').forEach(overlay => {
+            const r = parseInt(overlay.dataset.r);
+            const c = parseInt(overlay.dataset.c);
+            if (blockedCells.has(`${r},${c}`)) {
+                overlay.classList.add('blocked');
+            }
+        });
+    }
+    updateLog(`⬛ 已填充 ${added} 个空格为禁区，共 ${blockedCells.size} 个禁区`, "#9933ff");
+}
+
 // 创建可点击的格子覆盖层
 function createCellOverlays() {
     const board = document.getElementById('game-board');
