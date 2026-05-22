@@ -169,15 +169,18 @@ function resetBoard() {
     updateLog("地图已清空");
 }
 
-// 2. 🚀 核心功能：全自动铺满
+// 2. 🚀 核心功能：全自动铺满（两阶段填充）
 async function fillFullMap() {
     resetBoard();
     updateLog("正在生成关卡...");
-    
-    // 先生成所有箭头数据（不渲染）
+
+    const lengthWeights = readWeightedConfig('input-length-weights', DEFAULT_LENGTH_WEIGHT_TEXT);
+    const has1Cell = lengthWeights.hasOwnProperty(1) && lengthWeights[1] > 0;
+
+    // === Phase 1：主填充，禁止使用长度1 ===
     let failCount = 0;
-    while (failCount < 20) {
-        let success = await performSingleAdd(false);
+    while (failCount < 30) {
+        let success = await performSingleAdd(false, true); // suppressLength1=true
         if (success) {
             failCount = 0;
         } else {
@@ -185,32 +188,44 @@ async function fillFullMap() {
         }
         if (currentArrows.length % 10 === 0) await new Promise(r => setTimeout(r, 0));
     }
-    
+
+    // === Phase 2：碎片修复，尝试填充被遗漏的小区域 ===
+    // 此阶段允许使用长度1（如果用户配置了的话），让小口袋也能被填满
+    let phase2FailCount = 0;
+    while (phase2FailCount < 15) {
+        let success = await performSingleAdd(false, false); // suppressLength1=false
+        if (success) {
+            phase2FailCount = 0;
+        } else {
+            phase2FailCount++;
+        }
+        if (currentArrows.length % 5 === 0) await new Promise(r => setTimeout(r, 0));
+    }
+
     // 渲染禁区
     renderBlockedCells();
-    
+
     // 按箭头距离边缘的距离分组（从外到内）
     const arrowLayers = groupArrowsByLayer(currentArrows);
     const totalLayers = arrowLayers.length;
     const totalTimeMs = 1000;
-    const layerAnimTime = Math.max(60, totalTimeMs / totalLayers);
-    
+    const layerAnimTime = Math.max(60, totalTimeMs / Math.max(totalLayers, 1));
+
     updateLog(`正在播放生成动画...`);
-    
+
     // 按层级同时生成动画（从外向内蔓延）
     for (let layer = 0; layer < totalLayers; layer++) {
         const arrowsInLayer = arrowLayers[layer];
-        // 同一层的箭头同时播放入场动画
         await Promise.all(arrowsInLayer.map(a => renderArrowWithAnimation(a, layerAnimTime)));
     }
-    
+
     updateLog(`✅ 填充完毕，共 ${currentArrows.length} 根箭头`, "#00ff66");
 }
 
-// 3. ➕ 单次添加逻辑
+// 3. ➕ 单次添加逻辑（带区域感知）
 async function addSingleArrow() {
     if (!gridMap.length) resetBoard();
-    let success = await performSingleAdd(true);
+    let success = await performSingleAdd(true, false);
     if (success) {
         updateLog(`✅ 已添加第 ${currentArrows.length} 根`, "#00ff66");
     } else {
@@ -219,32 +234,48 @@ async function addSingleArrow() {
 }
 
 // 执行添加的核心算法
-async function performSingleAdd(shouldRender = true) {
+// suppressLength1: true 时跳过长度1（Phase 1 主填充使用），false 时允许所有配置长度
+async function performSingleAdd(shouldRender = true, suppressLength1 = false) {
     const lengthWeights = readWeightedConfig('input-length-weights', DEFAULT_LENGTH_WEIGHT_TEXT);
     const bendWeights = readWeightedConfig('input-bend-weights', DEFAULT_BEND_WEIGHT_TEXT);
 
+    // 收集所有空格，计算其连通区域大小
     let emptyCells = [];
     for (let r = 0; r < rows; r++) {
         for (let c = 0; c < cols; c++) {
-            // 跳过禁区和已有箭头的格子
             if (gridMap[r][c] === null && !isBlocked(r, c)) {
-                let dist = Math.min(r, rows - 1 - r, c, cols - 1 - c);
+                const dist = Math.min(r, rows - 1 - r, c, cols - 1 - c);
                 emptyCells.push({r, c, dist});
             }
         }
     }
     if (emptyCells.length === 0) return false;
 
-    // 优先从边缘开始尝试，增加填充密度
-    emptyCells.sort((a, b) => a.dist - b.dist + (Math.random() * 0.5));
+    // 优先从边缘开始尝试（增加填充密度），加入少量随机扰动避免重复
+    emptyCells.sort((a, b) => a.dist - b.dist + (Math.random() * 0.4 - 0.2));
+
     const maxLenAllowed = Math.min(rows * cols, 20);
+
+    // 确定候选长度：suppressLength1=true 时过滤掉长度1
+    const minLen = suppressLength1 ? 2 : 1;
     const candidateLens = Object.keys(lengthWeights)
         .map(Number)
-        .filter(len => Number.isInteger(len) && len >= 1 && len <= maxLenAllowed);
-    const fallbackLens = [4, 3, 2, 1].filter(len => len <= maxLenAllowed);
-    const lensToUse = candidateLens.length ? candidateLens : fallbackLens;
-    
-    for (let start of emptyCells.slice(0, 10)) { // 每次从最边缘的一批格子里选
+        .filter(len => Number.isInteger(len) && len >= minLen && len <= maxLenAllowed);
+    const fallbackLens = [4, 3, 2].filter(len => len >= minLen && len <= maxLenAllowed);
+    const baseLens = candidateLens.length ? candidateLens : fallbackLens;
+
+    // 候选起点数量扩展到30，提高填充成功率
+    const candidates = emptyCells.slice(0, 30);
+
+    for (let start of candidates) {
+        // 计算该起点的连通区域大小，作为可放置路径的最大长度上限
+        const regionSize = getRegionSize(start.r, start.c);
+        if (regionSize === 0) continue;
+
+        // 过滤掉超过连通区域大小的长度（它们不可能成功）
+        const lensToUse = baseLens.filter(len => len <= regionSize);
+        if (lensToUse.length === 0) continue;
+
         const lenOrder = buildWeightedOrder(lensToUse, lengthWeights);
         for (let len of lenOrder) {
             const maxBendForLen = Math.max(0, len - 2);
@@ -261,11 +292,10 @@ async function performSingleAdd(shouldRender = true) {
                 paths.sort(() => Math.random() - 0.5);
 
                 for (let path of paths) {
-                    // 根據頭部和第二節身體的延伸方向決定箭頭方向
                     let dirs = getDirectionFromPath(path);
                     for (let dir of dirs) {
                         if (validateAndStore(path, dir)) {
-                            if (shouldRender) renderArrow(currentArrows[currentArrows.length-1]);
+                            if (shouldRender) renderArrow(currentArrows[currentArrows.length - 1]);
                             return true;
                         }
                     }
@@ -533,6 +563,34 @@ function buildWeightedOrder(items, weightMap) {
         pool.splice(chosenIdx, 1);
     }
     return order;
+}
+
+// 计算起点所在的连通空格区域大小（BFS，只走 gridMap===null 且非禁区的格子）
+function getRegionSize(r, c) {
+    if (gridMap[r][c] !== null || isBlocked(r, c)) return 0;
+    const visited = new Set();
+    const queue = [{r, c}];
+    visited.add(`${r},${c}`);
+    while (queue.length) {
+        const cur = queue.shift();
+        const neighbors = [
+            {r: cur.r - 1, c: cur.c},
+            {r: cur.r + 1, c: cur.c},
+            {r: cur.r, c: cur.c - 1},
+            {r: cur.r, c: cur.c + 1}
+        ];
+        for (const n of neighbors) {
+            const key = `${n.r},${n.c}`;
+            if (n.r >= 0 && n.r < rows && n.c >= 0 && n.c < cols
+                && !visited.has(key)
+                && gridMap[n.r][n.c] === null
+                && !isBlocked(n.r, n.c)) {
+                visited.add(key);
+                queue.push(n);
+            }
+        }
+    }
+    return visited.size;
 }
 
 function getRay(r, c, dir) {
@@ -1511,19 +1569,21 @@ async function applyShapeMask() {
     // 等待一幀
     await new Promise(r => setTimeout(r, 10));
     
-    // 生成箭頭
+    // Phase 1：主填充，禁止使用长度1
     let failCount = 0;
     let totalAttempts = 0;
-    const maxAttempts = availableCells * 3; // 最大嘗試次數
-    
+    const maxAttempts = availableCells * 3;
     while (failCount < 30 && totalAttempts < maxAttempts) {
         totalAttempts++;
-        let success = await performSingleAdd(false);
-        if (success) {
-            failCount = 0;
-        } else {
-            failCount++;
-        }
+        let success = await performSingleAdd(false, true);
+        if (success) { failCount = 0; } else { failCount++; }
+        if (currentArrows.length % 5 === 0) await new Promise(r => setTimeout(r, 0));
+    }
+    // Phase 2：碎片修复，允许长度1填满小口袋
+    let phase2Fail = 0;
+    while (phase2Fail < 15) {
+        let success = await performSingleAdd(false, false);
+        if (success) { phase2Fail = 0; } else { phase2Fail++; }
         if (currentArrows.length % 5 === 0) await new Promise(r => setTimeout(r, 0));
     }
     
