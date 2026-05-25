@@ -974,22 +974,23 @@ function closeExportModal() {
     if (overlay) overlay.remove();
 }
 
-// 🗑️ 一键移除所有1格箭头
-async function removeShortArrows() {
+// 🗑️ 一键移除所有1格箭头（无动画，直接删除）
+function removeShortArrows() {
     const short = currentArrows.filter(a => a.path.length === 1);
     if (short.length === 0) {
         updateLog("ℹ️ 当前地图没有1格箭头", "#ffcc00");
         return;
     }
-    for (const a of short) {
+    short.forEach(a => {
         // 清除 gridMap
         a.path.forEach(p => gridMap[p.r][p.c] = null);
-        // 从数组移除
-        currentArrows = currentArrows.filter(i => i.id !== a.id);
-        // 带动画移除 DOM
+        // 直接移除 DOM
         const el = document.getElementById(`a-${a.id}`);
-        if (el) await animateSnakeExit(a, el);
-    }
+        if (el) el.remove();
+    });
+    // 从数组移除
+    const shortIds = new Set(short.map(a => a.id));
+    currentArrows = currentArrows.filter(a => !shortIds.has(a.id));
     updateLog(`🗑️ 已移除 ${short.length} 根1格箭头`, "#ff8800");
 }
 
