@@ -24,6 +24,7 @@
         <button class="btn-import" onclick="showImportModal()">📥 导入JSON</button>
         <input type="file" id="json-upload" accept=".json,application/json" style="display:none" onchange="handleJsonUpload(event)">
         <button class="btn-verify" onclick="verifyLevel()">🔍 关卡可解性校验</button>
+        <button class="btn-remove-short" onclick="removeShortArrows()">🗑️ 移除1格箭头</button>
         <button class="btn-draw" id="btn-draw-mode" onclick="toggleDrawMode()">✏️ 手动绘制</button>
         <select id="draw-direction" class="dir-select">
             <option value="U">↑ 向上</option>

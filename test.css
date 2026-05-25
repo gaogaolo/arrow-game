@@ -34,6 +34,8 @@ button:active { transform: scale(0.95); }
 .btn-verify { background: #ff6600; color: #fff; }
 .btn-verify:hover { background: #ff8833; }
 .btn-verify.active { background: #ff8833; box-shadow: 0 0 10px #ff6600; }
+.btn-remove-short { background: #cc3300; color: #fff; }
+.btn-remove-short:hover { background: #ff4422; }
 .btn-draw { background: #3399ff; color: #fff; }
 .btn-draw:hover { background: #55aaff; }
 .btn-draw.active { background: #66bbff; box-shadow: 0 0 10px #3399ff; }

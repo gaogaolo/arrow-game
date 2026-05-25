@@ -974,6 +974,25 @@ function closeExportModal() {
     if (overlay) overlay.remove();
 }
 
+// 🗑️ 一键移除所有1格箭头
+async function removeShortArrows() {
+    const short = currentArrows.filter(a => a.path.length === 1);
+    if (short.length === 0) {
+        updateLog("ℹ️ 当前地图没有1格箭头", "#ffcc00");
+        return;
+    }
+    for (const a of short) {
+        // 清除 gridMap
+        a.path.forEach(p => gridMap[p.r][p.c] = null);
+        // 从数组移除
+        currentArrows = currentArrows.filter(i => i.id !== a.id);
+        // 带动画移除 DOM
+        const el = document.getElementById(`a-${a.id}`);
+        if (el) await animateSnakeExit(a, el);
+    }
+    updateLog(`🗑️ 已移除 ${short.length} 根1格箭头`, "#ff8800");
+}
+
 // 🔍 關卡可解性校驗
 function verifyLevel() {
     if (currentArrows.length === 0) {
