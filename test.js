@@ -2,7 +2,29 @@ const NEON_COLORS = ['#ff0055', '#00e5ff', '#a600ff', '#ffaa00', '#00ff66', '#ff
 const CELL_SIZE = 40;
 const DEFAULT_LENGTH_WEIGHT_TEXT = '1:8,2:20,3:30,4:24,5:12,6:6';
 const DEFAULT_BEND_WEIGHT_TEXT = '0:40,1:35,2:20,3:5';
-const EXIT_STEP_MS = 100;
+const EXIT_STEP_MS = 80;
+const EXIT_SLIDE_MS = 220;
+const EXIT_FADE_MS = 130;
+const DEFAULT_PART_SIZE = 38;
+const LINE_PART_SIZE = 14;
+const LINE_HEAD_SIZE = 28;
+const DEFAULT_CONNECTOR_WIDTH = 18;
+const LINE_CONNECTOR_WIDTH = 14;
+const LINE_ARROW_COLOR = '#242424';
+const CARDINAL_DIRECTIONS = [
+    { code: 'U', label: '上', dr: -1, dc: 0, deg: 0 },
+    { code: 'D', label: '下', dr: 1, dc: 0, deg: 180 },
+    { code: 'L', label: '左', dr: 0, dc: -1, deg: -90 },
+    { code: 'R', label: '右', dr: 0, dc: 1, deg: 90 }
+];
+const DIAGONAL_DIRECTIONS = [
+    { code: 'UL', label: '左上', dr: -1, dc: -1, deg: -45 },
+    { code: 'UR', label: '右上', dr: -1, dc: 1, deg: 45 },
+    { code: 'DL', label: '左下', dr: 1, dc: -1, deg: -135 },
+    { code: 'DR', label: '右下', dr: 1, dc: 1, deg: 135 }
+];
+const ALL_DIRECTIONS = [...CARDINAL_DIRECTIONS, ...DIAGONAL_DIRECTIONS];
+const DIRECTION_BY_CODE = Object.fromEntries(ALL_DIRECTIONS.map(d => [d.code, d]));
 let currentArrows = [];
 let gridMap = [];
 let rows, cols;
@@ -13,6 +35,194 @@ let drawMode = false; // 是否处于手动绘制模式
 let isMouseDown = false; // 鼠标是否按下
 let currentDrawingPath = []; // 当前正在绘制的路径
 let drawingOverlay = null; // 绘制时的临时覆盖层
+
+function isDiagonalEnabled() {
+    const el = document.getElementById('input-allow-diagonal');
+    return !!(el && el.checked);
+}
+
+function isLineArrowStyleEnabled() {
+    const el = document.getElementById('input-line-style');
+    return !!(el && el.checked);
+}
+
+function toggleArrowStyle() {
+    syncArrowStyle();
+    renderAll();
+    updateLog(isLineArrowStyleEnabled() ? '已切换为黑色连续箭头线条' : '已切换为默认彩色箭头样式', isLineArrowStyleEnabled() ? '#d9d9d9' : '#00ff66');
+}
+
+function syncArrowStyle() {
+    const board = document.getElementById('game-board');
+    if (!board) return;
+    board.classList.toggle('arrow-style-line', isLineArrowStyleEnabled());
+}
+
+function getActiveDirections() {
+    return isDiagonalEnabled() ? ALL_DIRECTIONS : CARDINAL_DIRECTIONS;
+}
+
+function getActiveDirectionCodes() {
+    return getActiveDirections().map(d => d.code);
+}
+
+function isDiagonalDirection(dir) {
+    const def = DIRECTION_BY_CODE[dir];
+    return !!def && Math.abs(def.dr) === 1 && Math.abs(def.dc) === 1;
+}
+
+function isDirectionAllowed(dir) {
+    return !!DIRECTION_BY_CODE[dir] && (isDiagonalEnabled() || !isDiagonalDirection(dir));
+}
+
+function getDirectionDelta(dir) {
+    return DIRECTION_BY_CODE[dir] || DIRECTION_BY_CODE.U;
+}
+
+function getDirectionRotation(dir) {
+    return getDirectionDelta(dir).deg;
+}
+
+function getArrowPartSize(isHead = false) {
+    if (!isLineArrowStyleEnabled()) return DEFAULT_PART_SIZE;
+    return isHead ? LINE_HEAD_SIZE : LINE_PART_SIZE;
+}
+
+function getConnectorWidth() {
+    return isLineArrowStyleEnabled() ? LINE_CONNECTOR_WIDTH : DEFAULT_CONNECTOR_WIDTH;
+}
+
+function getArrowVisualColor(arrow) {
+    return isLineArrowStyleEnabled() ? LINE_ARROW_COLOR : arrow.color;
+}
+
+function getCellPixelPosition(cell, isHead = false) {
+    const size = getArrowPartSize(isHead);
+    return {
+        left: cell.c * CELL_SIZE + (CELL_SIZE - size) / 2,
+        top: cell.r * CELL_SIZE + (CELL_SIZE - size) / 2
+    };
+}
+
+function setPartPosition(part, cell) {
+    const isHead = part.classList.contains('head-part');
+    const pos = getCellPixelPosition(cell, isHead);
+    part.style.left = `${pos.left}px`;
+    part.style.top = `${pos.top}px`;
+}
+
+function applyArrowPartStyle(part, arrow, isHead = false) {
+    part.className = isHead ? 'part head-part' : 'part';
+    const color = getArrowVisualColor(arrow);
+    part.style.backgroundColor = color;
+    part.style.boxShadow = isLineArrowStyleEnabled() ? 'none' : `0 0 10px ${color}88`;
+}
+
+function cellKey(r, c) {
+    return `${r},${c}`;
+}
+
+function isInBounds(r, c, rowCount = rows, colCount = cols) {
+    return r >= 0 && r < rowCount && c >= 0 && c < colCount;
+}
+
+function getDiagonalGuardCells(from, to) {
+    const dr = to.r - from.r;
+    const dc = to.c - from.c;
+    if (Math.abs(dr) !== 1 || Math.abs(dc) !== 1) return [];
+    return [
+        { r: from.r, c: to.c },
+        { r: to.r, c: from.c }
+    ];
+}
+
+function getPathDiagonalGuardCells(path) {
+    const guards = [];
+    const seen = new Set();
+    for (let i = 0; i < path.length - 1; i++) {
+        for (const guard of getDiagonalGuardCells(path[i], path[i + 1])) {
+            const key = cellKey(guard.r, guard.c);
+            if (!seen.has(key)) {
+                seen.add(key);
+                guards.push(guard);
+            }
+        }
+    }
+    return guards;
+}
+
+function buildDiagonalGuardMap(arrows = currentArrows, skipIds = new Set()) {
+    const guardMap = new Map();
+    arrows.forEach(arrow => {
+        if (skipIds.has(arrow.id)) return;
+        getPathDiagonalGuardCells(arrow.path).forEach(guard => {
+            const key = cellKey(guard.r, guard.c);
+            if (!guardMap.has(key)) guardMap.set(key, new Set());
+            guardMap.get(key).add(arrow.id);
+        });
+    });
+    return guardMap;
+}
+
+function isCellReservedByDiagonalGuard(r, c, guardMap = buildDiagonalGuardMap()) {
+    return guardMap.has(cellKey(r, c));
+}
+
+function pathHasGeometryConflict(path, options = {}) {
+    const grid = options.grid || gridMap;
+    const skipIds = options.skipIds || new Set();
+    const guardMap = options.guardMap || buildDiagonalGuardMap(options.arrows || currentArrows, skipIds);
+    const pathKeys = new Set();
+
+    for (const p of path) {
+        if (!isInBounds(p.r, p.c)) return true;
+        if (isBlocked(p.r, p.c)) return true;
+        const key = cellKey(p.r, p.c);
+        if (pathKeys.has(key)) return true;
+        pathKeys.add(key);
+    }
+
+    for (const p of path) {
+        const key = cellKey(p.r, p.c);
+        const occupant = grid[p.r]?.[p.c];
+        if (occupant !== null && occupant !== undefined && !skipIds.has(occupant)) return true;
+        if (guardMap.has(key)) return true;
+    }
+
+    const newGuardKeys = new Set();
+    for (const guard of getPathDiagonalGuardCells(path)) {
+        if (!isInBounds(guard.r, guard.c)) return true;
+        if (isBlocked(guard.r, guard.c)) return true;
+        const key = cellKey(guard.r, guard.c);
+        if (pathKeys.has(key)) return true;
+        if (newGuardKeys.has(key)) return true;
+        newGuardKeys.add(key);
+
+        const occupant = grid[guard.r]?.[guard.c];
+        if (occupant !== null && occupant !== undefined && !skipIds.has(occupant)) return true;
+        if (guardMap.has(key)) return true;
+    }
+
+    return false;
+}
+
+function toggleDiagonalMode() {
+    syncDiagonalControls();
+    const enabled = isDiagonalEnabled();
+    updateLog(enabled ? '已开启斜向：生成、绘制和弯折支持八方向' : '已关闭斜向：仅允许上下左右', enabled ? '#00e5ff' : '#ffcc00');
+}
+
+function syncDiagonalControls() {
+    const select = document.getElementById('draw-direction');
+    if (!select) return;
+    const enabled = isDiagonalEnabled();
+    Array.from(select.options).forEach(option => {
+        if (option.dataset.diagonal === '1') option.disabled = !enabled;
+    });
+    if (!enabled && isDiagonalDirection(select.value)) {
+        select.value = 'U';
+    }
+}
 
 // 切换禁区选择模式
 function toggleBlockMode() {
@@ -241,9 +451,10 @@ async function performSingleAdd(shouldRender = true, suppressLength1 = false) {
 
     // 收集所有空格，计算其连通区域大小
     let emptyCells = [];
+    const diagonalGuardMap = buildDiagonalGuardMap();
     for (let r = 0; r < rows; r++) {
         for (let c = 0; c < cols; c++) {
-            if (gridMap[r][c] === null && !isBlocked(r, c)) {
+            if (gridMap[r][c] === null && !isBlocked(r, c) && !isCellReservedByDiagonalGuard(r, c, diagonalGuardMap)) {
                 const dist = Math.min(r, rows - 1 - r, c, cols - 1 - c);
                 emptyCells.push({r, c, dist});
             }
@@ -310,6 +521,7 @@ async function performSingleAdd(shouldRender = true, suppressLength1 = false) {
 function validateAndStore(path, dir) {
     let ray = getRay(path[0].r, path[0].c, dir);
     if (ray.some(r => path.some(p => p.r === r.r && p.c === r.c))) return false;
+    if (pathHasGeometryConflict(path)) return false;
 
     // 找出路徑上需要移除的舊箭頭
     const arrowsToRemove = new Set();
@@ -484,18 +696,18 @@ function hasCycle(adj, n) {
 
 function getPathsWithBend(r, c, len, targetBends, maxPaths = 120) {
     let res = [];
+    const diagonalGuardMap = buildDiagonalGuardMap();
     function walk(cr, cc, p, prevDir, bends) {
         if (res.length >= maxPaths) return;
         if (p.length === len) {
             if (bends === targetBends) res.push([...p]);
             return;
         }
-        let nexts = [
-            {r:cr-1, c:cc, dir:'U'},
-            {r:cr+1, c:cc, dir:'D'},
-            {r:cr, c:cc-1, dir:'L'},
-            {r:cr, c:cc+1, dir:'R'}
-        ];
+        let nexts = getActiveDirections().map(d => ({
+            r: cr + d.dr,
+            c: cc + d.dc,
+            dir: d.code
+        }));
         nexts.sort(() => Math.random() - 0.5);
         for (let n of nexts) {
             const nextBends = prevDir && prevDir !== n.dir ? bends + 1 : bends;
@@ -503,6 +715,8 @@ function getPathsWithBend(r, c, len, targetBends, maxPaths = 120) {
             // 跳过禁区格子
             if (n.r>=0 && n.r<rows && n.c>=0 && n.c<cols && gridMap[n.r][n.c]===null && !isBlocked(n.r, n.c)) {
                 if (!p.some(i => i.r===n.r && i.c===n.c)) {
+                    const nextPath = [...p, {r:n.r, c:n.c}];
+                    if (pathHasGeometryConflict(nextPath, { guardMap: diagonalGuardMap })) continue;
                     p.push({r:n.r, c:n.c});
                     walk(n.r, n.c, p, n.dir, nextBends);
                     p.pop();
@@ -567,24 +781,24 @@ function buildWeightedOrder(items, weightMap) {
 
 // 计算起点所在的连通空格区域大小（BFS，只走 gridMap===null 且非禁区的格子）
 function getRegionSize(r, c) {
-    if (gridMap[r][c] !== null || isBlocked(r, c)) return 0;
+    const diagonalGuardMap = buildDiagonalGuardMap();
+    if (gridMap[r][c] !== null || isBlocked(r, c) || isCellReservedByDiagonalGuard(r, c, diagonalGuardMap)) return 0;
     const visited = new Set();
     const queue = [{r, c}];
     visited.add(`${r},${c}`);
     while (queue.length) {
         const cur = queue.shift();
-        const neighbors = [
-            {r: cur.r - 1, c: cur.c},
-            {r: cur.r + 1, c: cur.c},
-            {r: cur.r, c: cur.c - 1},
-            {r: cur.r, c: cur.c + 1}
-        ];
+        const neighbors = getActiveDirections().map(d => ({
+            r: cur.r + d.dr,
+            c: cur.c + d.dc
+        }));
         for (const n of neighbors) {
             const key = `${n.r},${n.c}`;
             if (n.r >= 0 && n.r < rows && n.c >= 0 && n.c < cols
                 && !visited.has(key)
                 && gridMap[n.r][n.c] === null
-                && !isBlocked(n.r, n.c)) {
+                && !isBlocked(n.r, n.c)
+                && !isCellReservedByDiagonalGuard(n.r, n.c, diagonalGuardMap)) {
                 visited.add(key);
                 queue.push(n);
             }
@@ -595,8 +809,10 @@ function getRegionSize(r, c) {
 
 function getRay(r, c, dir) {
     let ry = [], cr = r, cc = c;
+    const delta = getDirectionDelta(dir);
     while (true) {
-        if (dir === 'U') cr--; else if (dir === 'D') cr++; else if (dir === 'L') cc--; else if (dir === 'R') cc++;
+        cr += delta.dr;
+        cc += delta.dc;
         if (cr<0 || cr>=rows || cc<0 || cc>=cols) break;
         ry.push({r: cr, c: cc});
     }
@@ -609,7 +825,7 @@ function getRay(r, c, dir) {
 function getDirectionFromPath(path) {
     if (path.length < 2) {
         // 如果只有一節身體，允許所有方向
-        return ['U', 'D', 'L', 'R'];
+        return getActiveDirectionCodes();
     }
     
     const head = path[0];      // 頭部位置
@@ -619,26 +835,15 @@ function getDirectionFromPath(path) {
     const dr = head.r - second.r;  // 行差
     const dc = head.c - second.c;  // 列差
     
-    // 根據延伸方向確定箭頭方向
-    if (dr < 0) {
-        // 頭部在第二節上方，身體往上延伸，箭頭朝上
-        return ['U'];
-    } else if (dr > 0) {
-        // 頭部在第二節下方，身體往下延伸，箭頭朝下
-        return ['D'];
-    } else if (dc < 0) {
-        // 頭部在第二節左方，身體往左延伸，箭頭朝左
-        return ['L'];
-    } else if (dc > 0) {
-        // 頭部在第二節右方，身體往右延伸，箭頭朝右
-        return ['R'];
-    }
+    const dirDef = ALL_DIRECTIONS.find(d => d.dr === dr && d.dc === dc);
+    if (dirDef && isDirectionAllowed(dirDef.code)) return [dirDef.code];
     
     // 理論上不會到達這裡（頭部和第二節不應該在同一位置）
-    return ['U', 'D', 'L', 'R'];
+    return getActiveDirectionCodes();
 }
 
 function renderAll() {
+    syncArrowStyle();
     document.getElementById('game-board').innerHTML = '';
     // 先渲染禁区显示
     renderBlockedCells();
@@ -649,20 +854,47 @@ function renderAll() {
 function renderArrow(a) {
     let g = document.createElement('div');
     g.className = 'arrow-group'; g.id = `a-${a.id}`;
+    appendPathConnectors(g, a);
     a.path.forEach((p, i) => {
         let b = document.createElement('div');
-        b.className = 'part'; b.style.left = `${p.c*CELL_SIZE}px`; b.style.top = `${p.r*CELL_SIZE}px`;
-        b.style.backgroundColor = a.color; b.style.boxShadow = `0 0 10px ${a.color}88`;
+        applyArrowPartStyle(b, a, i === 0);
+        setPartPosition(b, p);
         if (i === 0) {
             let h = document.createElement('div'); h.className = 'head-icon';
-            let deg = {U:0, D:180, L:-90, R:90}[a.dir];
-            h.style.transform = `rotate(${deg}deg)`;
+            h.style.transform = `rotate(${getDirectionRotation(a.dir)}deg)`;
             b.appendChild(h);
         }
         g.appendChild(b);
     });
     g.onclick = () => tryRemove(a);
     document.getElementById('game-board').appendChild(g);
+}
+
+function appendPathConnectors(group, arrow) {
+    for (let i = 0; i < arrow.path.length - 1; i++) {
+        const from = arrow.path[i];
+        const to = arrow.path[i + 1];
+        const x1 = from.c * CELL_SIZE + CELL_SIZE / 2;
+        const y1 = from.r * CELL_SIZE + CELL_SIZE / 2;
+        const x2 = to.c * CELL_SIZE + CELL_SIZE / 2;
+        const y2 = to.r * CELL_SIZE + CELL_SIZE / 2;
+        const dx = x2 - x1;
+        const dy = y2 - y1;
+        const connectorWidth = getConnectorWidth();
+        const overrun = isLineArrowStyleEnabled() ? 0 : connectorWidth * 0.65;
+        const length = Math.hypot(dx, dy) + overrun;
+        const connector = document.createElement('div');
+        connector.className = 'path-connector';
+        connector.style.left = `${(x1 + x2) / 2 - length / 2}px`;
+        connector.style.top = `${(y1 + y2) / 2 - connectorWidth / 2}px`;
+        connector.style.width = `${length}px`;
+        connector.style.height = `${connectorWidth}px`;
+        const color = getArrowVisualColor(arrow);
+        connector.style.backgroundColor = color;
+        connector.style.boxShadow = isLineArrowStyleEnabled() ? 'none' : `0 0 10px ${color}88`;
+        connector.style.transform = `rotate(${Math.atan2(dy, dx)}rad)`;
+        group.appendChild(connector);
+    }
 }
 
 // 貪吃蛇式入場動畫：箭頭從頭部開始逐格滾入
@@ -680,27 +912,23 @@ async function renderArrowWithAnimation(a, totalDurationMs) {
     g.onclick = () => tryRemove(a);
     
     // 預先創建所有part，但初始位置在頭部格子外側（根據方向）
-    const dirDelta = { U: {r: -1, c: 0}, D: {r: 1, c: 0}, L: {r: 0, c: -1}, R: {r: 0, c: 1} }[a.dir];
+    const dirDelta = getDirectionDelta(a.dir);
     const headPos = path[0];
     const startPos = { r: headPos.r + dirDelta.r, c: headPos.c + dirDelta.c };
     
     const parts = [];
     path.forEach((p, i) => {
         let b = document.createElement('div');
-        b.className = 'part';
+        applyArrowPartStyle(b, a, i === 0);
         // 初始位置都在起始位置
-        b.style.left = `${startPos.c * CELL_SIZE}px`;
-        b.style.top = `${startPos.r * CELL_SIZE}px`;
-        b.style.backgroundColor = a.color;
-        b.style.boxShadow = `0 0 10px ${a.color}88`;
+        setPartPosition(b, startPos);
         b.style.opacity = '0';
         b.style.transition = `left ${cellAnimMs}ms cubic-bezier(0.22, 0.61, 0.36, 1), top ${cellAnimMs}ms cubic-bezier(0.22, 0.61, 0.36, 1), opacity ${cellAnimMs}ms ease`;
         b.style.willChange = 'left, top, opacity';
         
         if (i === 0) {
             let h = document.createElement('div'); h.className = 'head-icon';
-            let deg = {U:0, D:180, L:-90, R:90}[a.dir];
-            h.style.transform = `rotate(${deg}deg)`;
+            h.style.transform = `rotate(${getDirectionRotation(a.dir)}deg)`;
             b.appendChild(h);
         }
         g.appendChild(b);
@@ -714,8 +942,6 @@ async function renderArrowWithAnimation(a, totalDurationMs) {
     
     // 逐個格子滾入動畫
     // 模擬貪吃蛇：頭部先移動到目標位置，然後每個身體格子依次跟隨
-    const bodyPositions = path.map(p => ({r: p.r, c: p.c}));
-    
     for (let step = 0; step < pathLen; step++) {
         // 當前步驟：第step個格子移動到目標位置
         // 同時更新所有已顯示格子的位置（跟隨效果）
@@ -724,8 +950,7 @@ async function renderArrowWithAnimation(a, totalDurationMs) {
             const targetIdx = step - i; // 頭部最先到達path[0]，後面的依次跟隨
             if (targetIdx >= 0 && targetIdx < pathLen) {
                 const target = path[targetIdx];
-                parts[i].style.left = `${target.c * CELL_SIZE}px`;
-                parts[i].style.top = `${target.r * CELL_SIZE}px`;
+                setPartPosition(parts[i], target);
                 parts[i].style.opacity = '1';
             }
         }
@@ -736,10 +961,10 @@ async function renderArrowWithAnimation(a, totalDurationMs) {
     
     // 確保所有格子都在正確位置
     path.forEach((p, i) => {
-        parts[i].style.left = `${p.c * CELL_SIZE}px`;
-        parts[i].style.top = `${p.r * CELL_SIZE}px`;
+        setPartPosition(parts[i], p);
         parts[i].style.opacity = '1';
     });
+    appendPathConnectors(g, a);
 }
 
 function sleep(ms) {
@@ -799,37 +1024,21 @@ async function tryRemove(a) {
 
 async function animateSnakeExit(a, el) {
     if (!el) return;
-    const parts = Array.from(el.querySelectorAll('.part'));
-    if (!parts.length) {
-        el.remove();
-        return;
-    }
+    const delta = getDirectionDelta(a.dir);
+    const exitCells = rows + cols + a.path.length + 4;
+    const tx = delta.dc * exitCells * CELL_SIZE;
+    const ty = delta.dr * exitCells * CELL_SIZE;
 
-    const delta = { U: {r: -1, c: 0}, D: {r: 1, c: 0}, L: {r: 0, c: -1}, R: {r: 0, c: 1} }[a.dir];
-    let body = a.path.map(p => ({r: p.r, c: p.c}));
-    const totalSteps = Math.max(rows, cols) + body.length + 2;
+    el.classList.add('exiting');
+    el.style.pointerEvents = 'none';
+    el.style.transition = `transform ${EXIT_SLIDE_MS}ms cubic-bezier(0.22, 0.61, 0.36, 1), opacity ${EXIT_FADE_MS}ms ease`;
+    el.style.willChange = 'transform, opacity';
+    el.style.backfaceVisibility = 'hidden';
 
-    parts.forEach(part => {
-        part.style.transition = `left ${EXIT_STEP_MS}ms cubic-bezier(0.22, 0.61, 0.36, 1), top ${EXIT_STEP_MS}ms cubic-bezier(0.22, 0.61, 0.36, 1), opacity ${EXIT_STEP_MS}ms ease`;
-        part.style.willChange = 'left, top, opacity';
-        part.style.backfaceVisibility = 'hidden';
-        part.style.transform = 'translateZ(0)';
-    });
-
-    for (let step = 0; step < totalSteps; step++) {
-        const prev = body.map(p => ({r: p.r, c: p.c}));
-        body[0] = { r: prev[0].r + delta.r, c: prev[0].c + delta.c };
-        for (let i = 1; i < body.length; i++) body[i] = prev[i - 1];
-
-        await nextFrame();
-        for (let i = 0; i < parts.length; i++) {
-            const cell = body[i];
-            parts[i].style.left = `${cell.c * CELL_SIZE}px`;
-            parts[i].style.top = `${cell.r * CELL_SIZE}px`;
-            parts[i].style.opacity = isOutside(cell) ? '0' : '1';
-        }
-        await waitForPartTransition(parts[0], EXIT_STEP_MS + 30);
-    }
+    await nextFrame();
+    el.style.transform = `translate(${tx}px, ${ty}px)`;
+    el.style.opacity = '0';
+    await waitForElementTransition(el, EXIT_SLIDE_MS + 40, ['transform', 'opacity']);
     el.remove();
 }
 
@@ -841,19 +1050,19 @@ function nextFrame() {
     return new Promise(resolve => requestAnimationFrame(() => resolve()));
 }
 
-function waitForPartTransition(part, fallbackMs) {
+function waitForElementTransition(el, fallbackMs, properties = []) {
     return new Promise(resolve => {
         let done = false;
         const finish = () => {
             if (done) return;
             done = true;
-            part.removeEventListener('transitionend', onEnd);
+            el.removeEventListener('transitionend', onEnd);
             resolve();
         };
         const onEnd = (e) => {
-            if (e.propertyName === 'left' || e.propertyName === 'top') finish();
+            if (!properties.length || properties.includes(e.propertyName)) finish();
         };
-        part.addEventListener('transitionend', onEnd);
+        el.addEventListener('transitionend', onEnd);
         setTimeout(finish, fallbackMs);
     });
 }
@@ -872,7 +1081,7 @@ function autoSolve() {
             running = false;
         }
         else { clearInterval(timer); isPlaying = true; updateLog("演示结束"); }
-    }, EXIT_STEP_MS + 40);
+    }, EXIT_SLIDE_MS + 40);
 }
 
 function updateLog(msg, color="#ffcc00") {
@@ -1114,6 +1323,7 @@ function toggleDrawMode() {
 function createDrawOverlays() {
     const board = document.getElementById('game-board');
     removeDrawOverlays();
+    const drawGuardMap = buildDiagonalGuardMap();
     
     for (let r = 0; r < rows; r++) {
         for (let c = 0; c < cols; c++) {
@@ -1127,15 +1337,14 @@ function createDrawOverlays() {
             overlay.dataset.r = r;
             overlay.dataset.c = c;
             
-            // 只檢查是否為禁區，允許覆蓋已有箭頭
             const isBlockedCell = isBlocked(r, c);
             const hasArrow = gridMap[r][c] !== null;
+            const hasDiagonalGuard = isCellReservedByDiagonalGuard(r, c, drawGuardMap);
             
-            if (isBlockedCell) {
+            if (isBlockedCell || hasDiagonalGuard) {
                 overlay.style.background = 'rgba(255,0,0,0.2)';
                 overlay.style.pointerEvents = 'none';
             } else if (hasArrow) {
-                // 有箭頭的格子顯示黃色提示，表示可以覆蓋
                 overlay.style.background = 'rgba(255,200,0,0.3)';
                 overlay.style.border = '1px dashed #ffaa00';
             }
@@ -1174,13 +1383,23 @@ function addToDrawPath(r, c, overlay) {
     // 檢查是否與現有路徑相鄰（第一個格子除外）
     if (currentDrawingPath.length > 0) {
         const last = currentDrawingPath[currentDrawingPath.length - 1];
-        const isAdjacent = Math.abs(last.r - r) + Math.abs(last.c - c) === 1;
+        const dr = Math.abs(last.r - r);
+        const dc = Math.abs(last.c - c);
+        const isAdjacent = isDiagonalEnabled()
+            ? Math.max(dr, dc) === 1 && (dr + dc) > 0
+            : dr + dc === 1;
         if (!isAdjacent) return;
     }
     
     // 檢查格子是否已有箭頭（不允許覆蓋）
     if (gridMap[r][c] !== null) {
         updateLog(`⚠️ 此格子已有箭頭，請選擇空白格子`, "#ff8800");
+        return;
+    }
+
+    const nextPath = [...currentDrawingPath, {r, c}];
+    if (pathHasGeometryConflict(nextPath)) {
+        updateLog(`⚠️ 此路径会与已有箭头身体重叠`, "#ff8800");
         return;
     }
     
@@ -1199,6 +1418,11 @@ function finishDrawing() {
     
     // 獲取選擇的方向
     const dir = document.getElementById('draw-direction').value;
+    if (!isDirectionAllowed(dir)) {
+        updateLog("⚠️ 請先開啟斜向配置，再使用斜向箭頭", "#ff8800");
+        clearDrawingPath();
+        return;
+    }
     
     // 驗證並存儲箭頭
     if (currentDrawingPath.length >= 1) {
@@ -1232,6 +1456,8 @@ function clearDrawingPath() {
 }
 
 // 初始化运行一次（只初始化地图，不自动填充，让用户可以先选择禁区）
+syncDiagonalControls();
+syncArrowStyle();
 resetBoard();
 updateLog("请选择禁区或直接生成地图", "#ffcc00");
 
@@ -1740,6 +1966,64 @@ function importFromText() {
     importLevel(levelData);
 }
 
+function validateLevelGeometry(data) {
+    const rowCount = data.MapSize[0];
+    const colCount = data.MapSize[1];
+    const occupied = new Map();
+    const diagonalGuards = new Map();
+    const parsePos = s => { const [r, c] = s.split('_').map(Number); return {r, c}; };
+
+    for (let i = 0; i < data.Arrows.length; i++) {
+        const arrow = data.Arrows[i];
+        const path = arrow.Path.map(parsePos);
+        const pathKeys = new Set();
+
+        for (let j = 0; j < path.length; j++) {
+            const p = path[j];
+            const key = cellKey(p.r, p.c);
+            if (!isInBounds(p.r, p.c, rowCount, colCount)) {
+                return { valid: false, message: `Arrows[${i}].Path[${j}]超出MapSize范围` };
+            }
+            if (pathKeys.has(key)) {
+                return { valid: false, message: `Arrows[${i}].Path存在重复格子：${p.r}_${p.c}` };
+            }
+            if (occupied.has(key)) {
+                return { valid: false, message: `Arrows[${i}]与Arrows[${occupied.get(key)}]身体格子重叠：${p.r}_${p.c}` };
+            }
+            if (diagonalGuards.has(key)) {
+                return { valid: false, message: `Arrows[${i}]身体与Arrows[${diagonalGuards.get(key)}]斜向线段重叠：${p.r}_${p.c}` };
+            }
+            pathKeys.add(key);
+        }
+
+        const localGuards = new Set();
+        for (const guard of getPathDiagonalGuardCells(path)) {
+            const key = cellKey(guard.r, guard.c);
+            if (!isInBounds(guard.r, guard.c, rowCount, colCount)) {
+                return { valid: false, message: `Arrows[${i}]斜向线段超出MapSize范围` };
+            }
+            if (pathKeys.has(key)) {
+                return { valid: false, message: `Arrows[${i}]斜向线段穿过自身身体：${guard.r}_${guard.c}` };
+            }
+            if (localGuards.has(key)) {
+                return { valid: false, message: `Arrows[${i}]内部斜向线段发生重叠：${guard.r}_${guard.c}` };
+            }
+            if (occupied.has(key)) {
+                return { valid: false, message: `Arrows[${i}]斜向线段与Arrows[${occupied.get(key)}]身体重叠：${guard.r}_${guard.c}` };
+            }
+            if (diagonalGuards.has(key)) {
+                return { valid: false, message: `Arrows[${i}]斜向线段与Arrows[${diagonalGuards.get(key)}]斜向线段重叠：${guard.r}_${guard.c}` };
+            }
+            localGuards.add(key);
+        }
+
+        pathKeys.forEach(key => occupied.set(key, i));
+        localGuards.forEach(key => diagonalGuards.set(key, i));
+    }
+
+    return { valid: true };
+}
+
 // 驗證關卡JSON格式
 function validateLevelJson(data) {
     // 檢查必需字段
@@ -1785,8 +2069,8 @@ function validateLevelJson(data) {
         if (!arrow.Dir) {
             return { valid: false, message: `Arrows[${i}]缺少Dir字段` };
         }
-        if (!['U', 'D', 'L', 'R'].includes(arrow.Dir)) {
-            return { valid: false, message: `Arrows[${i}].Dir必須是U、D、L或R` };
+        if (!DIRECTION_BY_CODE[arrow.Dir]) {
+            return { valid: false, message: `Arrows[${i}].Dir必須是U、D、L、R、UL、UR、DL或DR` };
         }
         
         // Path字段
@@ -1813,6 +2097,9 @@ function validateLevelJson(data) {
             return { valid: false, message: `Arrows[${i}].Color必須是字符串` };
         }
     }
+
+    const geometryValidation = validateLevelGeometry(data);
+    if (!geometryValidation.valid) return geometryValidation;
     
     return { valid: true };
 }
@@ -1823,6 +2110,12 @@ async function importLevel(data) {
     
     const newRows = data.MapSize[0];
     const newCols = data.MapSize[1];
+    const hasDiagonalArrow = data.Arrows.some(a => isDiagonalDirection(a.Dir));
+    if (hasDiagonalArrow) {
+        const diagonalInput = document.getElementById('input-allow-diagonal');
+        if (diagonalInput) diagonalInput.checked = true;
+        syncDiagonalControls();
+    }
     
     // 更新輸入框
     document.getElementById('input-rows').value = newRows;

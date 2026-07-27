@@ -1,4 +1,4 @@
-:root { --bg-color: #0d0e15; --grid-line: #1c1c28; --panel-bg: #151620; --text-color: #e0e0e0; }
+:root { --bg-color: #0d0e15; --grid-line: #1c1c28; --panel-bg: #151620; --text-color: #e0e0e0; --line-arrow-color: #242424; }
 body { font-family: 'Segoe UI', sans-serif; background-color: var(--bg-color); color: var(--text-color); display: flex; flex-direction: column; align-items: center; margin: 0; padding: 20px; user-select: none; }
 .controls { background: var(--panel-bg); padding: 15px 25px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); display: flex; gap: 10px; align-items: center; margin-bottom: 20px; border: 1px solid #333; flex-wrap: wrap; }
 input[type="number"] { width: 45px; padding: 5px; background: #222; border: 1px solid #444; color: #fff; border-radius: 4px; text-align: center; }
@@ -40,6 +40,8 @@ button:active { transform: scale(0.95); }
 .btn-draw:hover { background: #55aaff; }
 .btn-draw.active { background: #66bbff; box-shadow: 0 0 10px #3399ff; }
 .dir-select { padding: 5px 10px; background: #222; border: 1px solid #444; color: #fff; border-radius: 4px; cursor: pointer; }
+.toggle-label { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; font-size: 13px; color: #d9d9d9; }
+.toggle-label input { accent-color: #00e5ff; cursor: pointer; }
 #log { font-size: 13px; font-weight: bold; min-width: 220px; color: #ffcc00; }
 .deadlock-highlight { animation: deadlock-pulse 0.5s ease-in-out infinite alternate; }
 @keyframes deadlock-pulse { 
@@ -52,8 +54,15 @@ button:active { transform: scale(0.95); }
 .cell-overlay.blocked { background: rgba(153, 51, 255, 0.5); border: 2px dashed #cc66ff; }
 #game-board { position: relative; background-color: var(--grid-line); border: 2px solid #333; box-shadow: 0 0 30px rgba(0,0,0,0.8); overflow: hidden; }
 .arrow-group { position: absolute; transition: transform 0.4s cubic-bezier(0.25, 0.8, 0.25, 1), opacity 0.3s; cursor: pointer; z-index: 5; }
-.part { position: absolute; width: 38px; height: 38px; box-sizing: border-box; border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; display: flex; justify-content: center; align-items: center; }
+.part { position: absolute; width: 38px; height: 38px; box-sizing: border-box; border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; display: flex; justify-content: center; align-items: center; z-index: 1; }
+.path-connector { position: absolute; height: 18px; border-radius: 999px; pointer-events: none; transform-origin: center; z-index: 0; }
 .head-icon { width: 0; height: 0; border-left: 10px solid transparent; border-right: 10px solid transparent; border-bottom: 16px solid #fff; }
+#game-board.arrow-style-line { background-color: #f2f2ef; border-color: #d6d6d2; box-shadow: 0 0 24px rgba(0,0,0,0.18); }
+#game-board.arrow-style-line .arrow-group { filter: none; }
+#game-board.arrow-style-line .part { width: 14px; height: 14px; border: none; border-radius: 999px; background: var(--line-arrow-color) !important; box-shadow: none !important; }
+#game-board.arrow-style-line .part.head-part { width: 28px; height: 28px; background: transparent !important; }
+#game-board.arrow-style-line .path-connector { height: 14px; background: var(--line-arrow-color) !important; box-shadow: none !important; }
+#game-board.arrow-style-line .head-icon { position: absolute; left: 50%; top: 50%; width: 30px; height: 30px; margin-left: -15px; margin-top: -15px; border: 0; background: var(--line-arrow-color); clip-path: polygon(50% 0, 8% 82%, 92% 82%); transform-origin: center center; z-index: 2; }
 @keyframes shake { 0%, 100% { transform: translateX(0); } 25% { transform: translateX(-4px); } 75% { transform: translateX(4px); } }
 .shake { animation: shake 0.3s; filter: brightness(1.5) saturate(1.5); }
 

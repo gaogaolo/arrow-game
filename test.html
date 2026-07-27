@@ -13,6 +13,8 @@
         <label>关卡序号: <input type="number" id="input-level-id" value="1" min="1" style="width:60px;"></label>
         <label>长度权重: <input type="text" id="input-length-weights" value="1:8,2:20,3:30,4:24,5:12,6:6" style="width:240px;text-align:left;"></label>
         <label>弯折权重: <input type="text" id="input-bend-weights" value="0:40,1:35,2:20,3:5" style="width:180px;text-align:left;"></label>
+        <label class="toggle-label"><input type="checkbox" id="input-allow-diagonal" onchange="toggleDiagonalMode()"> 允许斜向</label>
+        <label class="toggle-label"><input type="checkbox" id="input-line-style" onchange="toggleArrowStyle()"> 箭头样式切换</label>
         <button class="btn-reset" onclick="resetBoard()">🧹 重置</button>
         <button class="btn-block" id="btn-block-mode" onclick="toggleBlockMode()">🚫 选择禁区</button>
         <button class="btn-clear-block" onclick="clearBlockedCells()">🗑️ 清除禁区</button>
@@ -31,6 +33,10 @@
             <option value="D">↓ 向下</option>
             <option value="L">← 向左</option>
             <option value="R">→ 向右</option>
+            <option value="UL" data-diagonal="1">↖ 左上</option>
+            <option value="UR" data-diagonal="1">↗ 右上</option>
+            <option value="DL" data-diagonal="1">↙ 左下</option>
+            <option value="DR" data-diagonal="1">↘ 右下</option>
         </select>
         <button class="btn-shape" id="btn-shape-mode" onclick="toggleShapeMode()">🎨 形状生成</button>
         <input type="file" id="svg-upload" accept=".svg,image/svg+xml" style="display:none" onchange="handleSvgUpload(event)">
