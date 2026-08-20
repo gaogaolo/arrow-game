@@ -1,142 +1,201 @@
-# 箭头游戏关卡生成器 — AI 协作规范
+# 箭头游戏编辑器记忆
 
-## 项目概述
+更新时间：2026-07-31
 
-这是一个 HTML/CSS/JavaScript 单页应用，用于生成和编辑"挪箭头"益智游戏的关卡数据。
-核心功能是在 `rows × cols` 的网格上，自动生成若干箭头线条，保证关卡**有唯一可解顺序**（无死锁）。
+这是当前最新的箭头游戏关卡编辑器记忆文件，供后续继续开发、恢复上下文和分享给其他 AI 使用。
 
-- 入口文件：`test.html`（引用 `test.css` 和 `test.js`）
-- 所有逻辑均在 `test.js` 中，无框架依赖
-- 仓库：https://github.com/gaogaolo/arrow-game.git
+## 项目
 
----
+- 单页应用：`test.html` + `test.css` + `test.js`
+- 无框架，所有逻辑集中在 `test.js`
+- 作用：生成、手动绘制、导入、导出、校验、展示箭头关卡
+- 仓库：`https://github.com/gaogaolo/arrow-game.git`
 
-## 核心数据结构
+## 当前数据模型
 
 ```js
-// 格子索引：gridMap[r][c] = arrowId | null
-let gridMap = [];           // rows × cols 二维数组
+let gridMap = [];      // rows x cols，存 arrowId 或 null
+let currentArrows = []; // 当前箭头列表
+let blockedCells = new Set(); // 禁区，格式 "r,c"
 
-// 箭头对象
 {
-  id: Number,               // 唯一ID（= currentArrows.length 时插入）
-  dir: 'U'|'D'|'L'|'R',   // 箭头朝向（射出方向）
-  path: [{r, c}, ...],      // 身体格子列表，path[0] 是头部
-  ray: [{r, c}, ...],       // 从头部向 dir 方向射出到边界的所有格子
-  color: '#rrggbb'          // 霓虹颜色
+  id: Number,
+  dir: 'U' | 'D' | 'L' | 'R' | 'UL' | 'UR' | 'DL' | 'DR',
+  path: [{ r, c }, ...], // path[0] 是头部
+  ray: [{ r, c }, ...],  // 从头部沿 dir 射出的全部格子
+  color: '#rrggbb'
 }
-
-// 禁区：blockedCells = Set<"r,c">
-// 禁区格子不可放置箭头，相当于障碍物
 ```
 
----
+## 方向系统
 
-## 箭头生成核心规则（Rules）
+- 基础四向：`U/D/L/R`
+- 斜向四向：`UL/UR/DL/DR`
+- 方向表集中在：
+  - `CARDINAL_DIRECTIONS`
+  - `DIAGONAL_DIRECTIONS`
+  - `ALL_DIRECTIONS`
+  - `DIRECTION_BY_CODE`
 
-### Rule 1 — 射线不能穿过自身身体
-```
-ray 中不能包含 path 中的任何格子
-→ 否则该箭头永远无法被移除（自我阻塞）
-```
+## 目前支持的能力
 
-### Rule 2 — 无循环依赖（DAG 校验）
-```
-依赖关系定义：
-  - 箭头 A 的射线被箭头 B 的身体阻挡 → B 必须先于 A 移除 → adj[A] 包含 B
-  - 构建有向图后，用 DFS 检测是否存在环
-  - 有环 = 死锁，拒绝放置
-```
-实现：`hasCycle(adj, n)` — DFS 三色标记法
+- 自动铺满生成
+- 单次随机加箭头
+- 手动绘制
+- 禁区选择 / 一键填充禁区
+- 关卡导出 / 导入
+- 关卡可解性校验
+- 形状关卡生成
+- 斜向箭头开关
+- 黑白连续线条样式开关
 
-### Rule 3 — 模拟求解验证（可解性）
-```
-每次放置新箭头前，在临时副本上模拟"贪心求解"：
-  - 反复寻找射线未被阻挡的箭头，依次移除
-  - 直到全部移除（成功）或无法继续（失败）
-  - 失败则拒绝该放置方案
-```
-实现：`quickSolveCheck(arrows, grid)`
+## 斜向模式
 
-### Rule 4 — 箭头方向由身体走向决定
-```
-dir 由 path[0]（头部）和 path[1]（第二节）的位置关系决定：
-  head 在 second 上方 → dir = 'U'
-  head 在 second 下方 → dir = 'D'
-  head 在 second 左方 → dir = 'L'
-  head 在 second 右方 → dir = 'R'
-单节箭头（len=1）：允许4个方向，全部尝试
-```
-实现：`getDirectionFromPath(path)`
+### 开关
 
----
+- UI：`input-allow-diagonal`
+- 入口逻辑：`isDiagonalEnabled()`
+- 控制函数：`toggleDiagonalMode()`、`syncDiagonalControls()`
 
-## 填充算法（Generation Algorithm）
+### 影响范围
 
-### 两阶段填充（fillFullMap）
+斜向开启后，以下地方都允许 `UL/UR/DL/DR`：
 
-**Phase 1 — 主填充**
-- `suppressLength1 = true`：禁止生成长度为1的箭头
-- 连续失败30次后结束本阶段
-- 目标：用长度 ≥ 2 的箭头铺满大部分地图
+- 自动生成
+- 路径搜索
+- 手动绘制方向选择
+- 导入 JSON 校验
+- 渲染方向旋转
 
-**Phase 2 — 碎片修复**
-- `suppressLength1 = false`：允许长度1（若用户配置了）
-- 连续失败15次后结束
-- 目标：填充 Phase 1 遗留的碎片小口袋
+### 关键约束
 
-### 单次放置核心流程（performSingleAdd）
+斜向段会额外占用“保护格”：
 
-```
-1. 收集所有空格，按"距边缘距离"升序排列（优先从边缘开始）
-   + 加入少量随机扰动（±0.2）避免重复
-2. 取前30个格子作为候选起点
-3. 对每个候选起点：
-   a. BFS 计算其连通空格区域大小 regionSize（getRegionSize）
-   b. 过滤候选长度：只保留 len ≤ regionSize 的长度（避免无效尝试）
-   c. 按权重随机排列长度顺序（buildWeightedOrder）
-   d. 对每个长度，按权重排列弯折数顺序
-   e. 用 DFS 回溯生成路径（getPathsWithBend，最多120条）
-   f. 随机打乱路径列表
-   g. 对每条路径调用 validateAndStore 验证并存储
-   h. 成功立即返回 true
-4. 所有候选都失败则返回 false
-```
+- 对于相邻对角段 `from -> to`
+- 保护格为：
+  - `{ r: from.r, c: to.c }`
+  - `{ r: to.r, c: from.c }`
+- 这些格子不能被其他箭头身体或其他斜向保护格占用
 
-### BFS 区域感知（getRegionSize）
-```
-关键优化：计算起点所在的连通空格区域大小
-作用：若某区域只有3格连通，则无需尝试长度4、5、6的路径
-  → 大幅减少无效尝试，使填充更彻底
-```
+相关函数：
 
-### 路径生成（getPathsWithBend）
-```
-DFS 回溯生成指定长度、指定弯折数的所有路径
-- 每步随机打乱4个方向顺序（增加多样性）
-- 弯折数：路径中方向改变的次数
-- 最多生成 maxPaths=120 条路径后截断
-```
+- `getDiagonalGuardCells()`
+- `getPathDiagonalGuardCells()`
+- `buildDiagonalGuardMap()`
+- `isCellReservedByDiagonalGuard()`
+- `pathHasGeometryConflict()`
+- `validateLevelGeometry()`
 
-### 权重配置格式
-```
-长度权重（input-length-weights）：默认 "1:8,2:20,3:30,4:24,5:12,6:6"
-弯折权重（input-bend-weights）：默认 "0:40,1:35,2:20,3:5"
-格式：值:权重,值:权重,...（权重越大概率越高）
-解析：buildWeightedOrder 基于轮盘赌算法按权重随机排序
-```
+## 黑白线条样式
 
----
+### 开关
 
-## 关卡可解性校验
+- UI：`input-line-style`
+- 控制函数：`isLineArrowStyleEnabled()`、`toggleArrowStyle()`、`syncArrowStyle()`
 
-`verifyLevel()` / `solvePuzzle(arrows, grid)`：
-- 反复寻找"射线未被任何箭头阻挡"的箭头并移除
-- 直到全部移除（✅ 可解）或陷入僵局（❌ 死局，高亮死局箭头）
+### 表现
 
----
+- board 变成浅色底
+- 箭头主体变成黑色连续线条
+- connector 变成黑色线段
+- 头部三角形改为 `clip-path` 方式，确保方向正确
 
-## 数据导出格式（JSON）
+### 相关常量
+
+- `LINE_PART_SIZE`
+- `LINE_HEAD_SIZE`
+- `LINE_CONNECTOR_WIDTH`
+- `LINE_ARROW_COLOR`
+
+## 生成逻辑
+
+### 自动铺满
+
+`fillFullMap()` 分两阶段：
+
+1. 主填充：禁止长度 1
+2. 碎片修复：允许长度 1
+
+### 单次添加
+
+`performSingleAdd()` 的思路：
+
+1. 收集所有空格
+2. 排除禁区和斜向保护格
+3. 按距离边缘排序，优先从边缘尝试
+4. 取前 30 个起点
+5. 计算连通区域大小 `getRegionSize()`
+6. 按长度权重和弯折权重枚举
+7. `getPathsWithBend()` 生成路径
+8. `validateAndStore()` 校验并落盘
+
+### 权重配置
+
+- 长度权重：`input-length-weights`
+- 弯折权重：`input-bend-weights`
+- 默认值：
+  - `1:8,2:20,3:30,4:24,5:12,6:6`
+  - `0:40,1:35,2:20,3:5`
+
+## 放置规则
+
+`validateAndStore(path, dir)` 会检查：
+
+- `ray` 不能穿过自己的身体
+- `pathHasGeometryConflict(path)` 不能失败
+- 临时移除被覆盖旧箭头后，依赖图不能成环
+- `quickSolveCheck()` 结果必须仍然可解
+
+### 依赖图
+
+- 用身体与射线的阻挡关系构建 DAG
+- `hasCycle(adj, n)` 用 DFS 三色标记检测死锁
+
+### 可解性
+
+- `quickSolveCheck(arrows, grid)` 做贪心求解模拟
+- `verifyLevel()` / `solvePuzzle()` 用于关卡是否可完全消除
+
+## 渲染逻辑
+
+### 普通渲染
+
+- `renderArrow()`：生成箭头组
+- `appendPathConnectors()`：画路径连线
+- `head-icon`：按 `getDirectionRotation(dir)` 旋转
+
+### 入场动画
+
+- `renderArrowWithAnimation()` 采用“蛇形滚入”
+- 头部先出现，身体逐格跟随
+
+### 出场动画
+
+- `tryRemove()` 检查射线是否被挡
+- 若可移除，先清 `gridMap`，再执行 `animateSnakeExit()`
+- 该逻辑已经修过“头部停留一段时间才消失”的问题
+
+## 手动绘制
+
+- `toggleDrawMode()` 开关手动绘制
+- `createDrawOverlays()` 创建可点格子
+- `addToDrawPath()` 要求相邻格：
+  - 斜向开启时允许 8 邻接
+  - 否则只允许上下左右
+- 绘制过程中不允许穿过已有箭头或斜向保护格
+- `finishDrawing()` 结束后按 `draw-direction` 生成箭头
+
+## 禁区
+
+- `toggleBlockMode()`：进入禁区选择模式
+- `clearBlockedCells()`：清除禁区
+- `fillEmptyCellsAsBlocked()`：把当前空格全部设成禁区
+
+## 关卡导入 / 导出
+
+### 导出
+
+格式：
 
 ```json
 {
@@ -152,27 +211,119 @@ DFS 回溯生成指定长度、指定弯折数的所有路径
   ]
 }
 ```
-Path 格式：`"行_列"`（从0开始）
 
----
+### 导入
 
-## 常见修改场景
+- `validateLevelJson()` 校验基础结构
+- `validateLevelGeometry()` 校验几何重叠和斜向保护格
+- `importLevel()` 会：
+  - 自动设置地图大小
+  - 清空当前箭头和禁区
+  - 如果有斜向箭头，自动勾选斜向模式
+  - 按层级播放入场动画
 
-| 需求 | 修改位置 |
-|------|---------|
-| 调整默认长度/弯折权重 | `DEFAULT_LENGTH_WEIGHT_TEXT` / `DEFAULT_BEND_WEIGHT_TEXT` |
-| 调整填充阈值（失败次数） | `fillFullMap` 中的 failCount 上限（30/15） |
-| 调整候选起点数量 | `performSingleAdd` 中的 `.slice(0, 30)` |
-| 增加/修改颜色 | `NEON_COLORS` 数组 |
-| 修改格子大小 | `CELL_SIZE`（同时需更新 CSS） |
-| 添加新的生成约束 | 在 `validateAndStore` 中增加判断 |
+### 导入校验重点
 
----
+- `MapSize` 必须是 `[rows, cols]`
+- `Dir` 必须是 `U/D/L/R/UL/UR/DL/DR`
+- `Path` 必须是 `"r_c"` 字符串数组
+- `Color` 可选
+- 导入不会自动判断“是否可解”，只做格式与几何校验
+- `AllowDiagonalCornerTouch`（可选布尔值）只用于恢复关卡：开启后仍禁止越界、同箭头重复身体格、不同箭头身体格重叠；斜向保护格不再视为占用的身体格。手动生成、绘制仍使用严格保护格规则。
 
-## 注意事项
+## 关卡恢复 / APK 映射记忆
 
-1. **不要破坏三条放置规则**（Rule 1-3），否则会产生无法通关的死局
-2. `currentArrows` 数组中的 ID 不连续是正常的（删除后不重排）
-3. `gridMap[r][c]` 存的是 arrowId（数字），null 表示空格
-4. `suppressLength1=true` 只影响 Phase 1，不影响 Phase 2 和单次添加
-5. 形状关卡（applyShapeMask）会将形状外的格子设为禁区，走同样的两阶段流程
+这部分是和本编辑器配套的关卡恢复规则，后续从 APK / AAB / 原始资源恢复时要记住：
+
+- 原始 Unity 节点常常是尾到头顺序
+- 转成编辑器时要反转成头到尾
+- 原始坐标常见是 `x/y`，编辑器里用 `r/c`
+  - `r = y`
+  - `c = x`
+- 线上关卡顺序通常来自 `online_level_order.csv`
+- 恢复结果建议按线上顺序命名：
+  - `Level_0001_src2.json`
+  - `Level_0002_src4.json`
+  - ...
+
+### 常见转换版本
+
+- `runtime_expanded_correct_mapping_*`
+  - 从 raw level 直接展开成编辑器网格
+- `continuous_no_diagonal`
+  - 无斜向版本
+- `diagonal_compatible_editor_levels_*`
+  - 兼容当前编辑器斜向规则的版本
+- `diagonal_direct_editor_levels_*`
+  - 不做冲突避让的直转版本
+
+### 重要区别
+
+- “兼容版”会尽量避开斜向保护格冲突，保证导入成功
+- “直转版”会忠实保留原始路径，不做绕路或降级
+- 如果要给当前编辑器导入，优先使用兼容版
+- 如果要研究原包原始路径语义，优先使用直转版
+
+### Arrow Snap 上下镜像与原始线段
+
+Arrow Snap（`com.earahgkfhudio.arjgiwsnap`）的 554 关斜向兼容版已确认也需要上下镜像：
+
+- 节点：`r -> rows - 1 - r`，`c` 不变
+- 方向：`U <-> D`、`UL <-> DL`、`UR <-> DR`，`L/R` 不变
+- 保留原目录，不覆盖；产物放入新的 `raw_segment_verified_flip_y_editor_levels_*` 目录
+
+Arrow Snap 的 raw `nodes` 是原包绘制线段的端点，并不总是相邻格。第 12 关的长斜线也必须按原始端点直连，不能插入中间格、绕路、删除节点或降级为其他路径，否则会改变线上图案并可能造成回折。
+
+已验证的恢复流程：先将 raw 节点从尾到头反转为编辑器头到尾，映射 `r=y,c=x`，做上下镜像并同步方向，再执行节点与线段审计。审计必须检查越界、重复身体节点、跨箭头身体重叠、线段穿过身体节点、线段相交和共线重叠。
+
+仅有 8 根箭头存在可证明的原始首节点顺序错误：前三个节点是同一直线的 `中点、端点、端点` 且每段为单位步时，交换前两个节点；涉及线上第 70、128、165、170、208、336、436、496 关。不得对其他路径做通用排序。
+
+## 维护提醒
+
+如果调整方向系统或几何规则，记得同步更新：
+
+- `test.js`
+- `test.html`
+- `test.css`
+- 导入校验
+- 路径生成
+- 手动绘制
+- 关卡恢复脚本
+
+不要忘记：
+
+- `currentArrows` 删除后 ID 可能不连续
+- 黑白样式的箭头头部要继续使用 `clip-path` 三角形
+- 退出动画要保证元素最终被移除
+- 斜向保护格规则一改，生成、导入、恢复脚本都要一起改
+
+## 产品特例：com.syarblitacl.abgame
+
+Arrow Blitz Tap Clear（包名 `com.syarblitacl.abgame`）的恢复结果有一个已验证的坐标方向差异：
+
+- 恢复出的身体图案结构是对的，但在编辑器里整体上下颠倒
+- 正确修复不是“只反转 Dir”，而是坐标上下镜像，并同步上下方向
+- 对每个 `Path` 节点 `r_c`：`r -> rows - 1 - r`，`c` 不变
+- `Dir` 只交换垂直方向：`U <-> D`、`UL <-> DL`、`UR <-> DR`，`L/R` 保持不变
+- 保留 `Level`、`MapSize`、`Id`、`Color`、源关卡 id、文件名和线上顺序
+
+方向映射：
+
+```text
+U -> D
+D -> U
+L -> L
+R -> R
+UL -> DL
+DL -> UL
+UR -> DR
+DR -> UR
+```
+
+已生成的正确修正版目录：
+
+`/Users/xmiles/Documents/像素消除游戏/箭头产品关卡配置_按产品名整理_20260715/01_Arrow_Blitz_Tap_Clear__com.syarblitacl.abgame/flip_y_fixed_editor_levels_20260813`
+
+废弃目录，不要继续使用：
+
+`/Users/xmiles/Documents/像素消除游戏/箭头产品关卡配置_按产品名整理_20260715/01_Arrow_Blitz_Tap_Clear__com.syarblitacl.abgame/dir_reversed_editor_levels_20260813`

@@ -35,6 +35,8 @@ let drawMode = false; // 是否处于手动绘制模式
 let isMouseDown = false; // 鼠标是否按下
 let currentDrawingPath = []; // 当前正在绘制的路径
 let drawingOverlay = null; // 绘制时的临时覆盖层
+// Recovered levels may explicitly allow diagonal corner touching; authoring stays strict.
+let allowDiagonalCornerTouch = false;
 
 function isDiagonalEnabled() {
     const el = document.getElementById('input-allow-diagonal');
@@ -369,6 +371,7 @@ function resetBoard() {
     board.innerHTML = '';
     gridMap = Array.from({length: rows}, () => Array(cols).fill(null));
     currentArrows = [];
+    allowDiagonalCornerTouch = false;
     isPlaying = true;
     
     // 如果在禁区模式，重新创建覆盖层
@@ -1101,6 +1104,7 @@ function exportLevel() {
     const levelData = {
         Level: levelId,
         MapSize: [rows, cols],
+        ...(allowDiagonalCornerTouch ? { AllowDiagonalCornerTouch: true } : {}),
         Arrows: currentArrows.map(a => ({
             Id: a.id,
             Dir: a.dir,
@@ -1966,9 +1970,10 @@ function importFromText() {
     importLevel(levelData);
 }
 
-function validateLevelGeometry(data) {
+function validateLevelGeometry(data, options = {}) {
     const rowCount = data.MapSize[0];
     const colCount = data.MapSize[1];
+    const allowCornerTouch = options.allowDiagonalCornerTouch === true;
     const occupied = new Map();
     const diagonalGuards = new Map();
     const parsePos = s => { const [r, c] = s.split('_').map(Number); return {r, c}; };
@@ -1990,35 +1995,40 @@ function validateLevelGeometry(data) {
             if (occupied.has(key)) {
                 return { valid: false, message: `Arrows[${i}]与Arrows[${occupied.get(key)}]身体格子重叠：${p.r}_${p.c}` };
             }
-            if (diagonalGuards.has(key)) {
+            if (!allowCornerTouch && diagonalGuards.has(key)) {
                 return { valid: false, message: `Arrows[${i}]身体与Arrows[${diagonalGuards.get(key)}]斜向线段重叠：${p.r}_${p.c}` };
             }
             pathKeys.add(key);
         }
 
-        const localGuards = new Set();
-        for (const guard of getPathDiagonalGuardCells(path)) {
-            const key = cellKey(guard.r, guard.c);
-            if (!isInBounds(guard.r, guard.c, rowCount, colCount)) {
-                return { valid: false, message: `Arrows[${i}]斜向线段超出MapSize范围` };
+        // Recovered Arrow Snap levels preserve the package's source segments.
+        // With this opt-in flag, diagonal guard cells are visual corner space,
+        // not occupied body cells. Actual body-cell uniqueness stays strict.
+        if (!allowCornerTouch) {
+            const localGuards = new Set();
+            for (const guard of getPathDiagonalGuardCells(path)) {
+                const key = cellKey(guard.r, guard.c);
+                if (!isInBounds(guard.r, guard.c, rowCount, colCount)) {
+                    return { valid: false, message: `Arrows[${i}]斜向线段超出MapSize范围` };
+                }
+                if (pathKeys.has(key)) {
+                    return { valid: false, message: `Arrows[${i}]斜向线段穿过自身身体：${guard.r}_${guard.c}` };
+                }
+                if (localGuards.has(key)) {
+                    return { valid: false, message: `Arrows[${i}]内部斜向线段发生重叠：${guard.r}_${guard.c}` };
+                }
+                if (occupied.has(key)) {
+                    return { valid: false, message: `Arrows[${i}]斜向线段与Arrows[${occupied.get(key)}]身体重叠：${guard.r}_${guard.c}` };
+                }
+                if (diagonalGuards.has(key)) {
+                    return { valid: false, message: `Arrows[${i}]斜向线段与Arrows[${diagonalGuards.get(key)}]斜向线段重叠：${guard.r}_${guard.c}` };
+                }
+                localGuards.add(key);
             }
-            if (pathKeys.has(key)) {
-                return { valid: false, message: `Arrows[${i}]斜向线段穿过自身身体：${guard.r}_${guard.c}` };
-            }
-            if (localGuards.has(key)) {
-                return { valid: false, message: `Arrows[${i}]内部斜向线段发生重叠：${guard.r}_${guard.c}` };
-            }
-            if (occupied.has(key)) {
-                return { valid: false, message: `Arrows[${i}]斜向线段与Arrows[${occupied.get(key)}]身体重叠：${guard.r}_${guard.c}` };
-            }
-            if (diagonalGuards.has(key)) {
-                return { valid: false, message: `Arrows[${i}]斜向线段与Arrows[${diagonalGuards.get(key)}]斜向线段重叠：${guard.r}_${guard.c}` };
-            }
-            localGuards.add(key);
-        }
 
+            localGuards.forEach(key => diagonalGuards.set(key, i));
+        }
         pathKeys.forEach(key => occupied.set(key, i));
-        localGuards.forEach(key => diagonalGuards.set(key, i));
     }
 
     return { valid: true };
@@ -2051,6 +2061,10 @@ function validateLevelJson(data) {
     }
     if (!Array.isArray(data.Arrows)) {
         return { valid: false, message: "Arrows必須是數組" };
+    }
+
+    if (data.AllowDiagonalCornerTouch !== undefined && typeof data.AllowDiagonalCornerTouch !== 'boolean') {
+        return { valid: false, message: "AllowDiagonalCornerTouch必須是布爾值" };
     }
     
     // 檢查每個箭頭的結構
@@ -2098,7 +2112,9 @@ function validateLevelJson(data) {
         }
     }
 
-    const geometryValidation = validateLevelGeometry(data);
+    const geometryValidation = validateLevelGeometry(data, {
+        allowDiagonalCornerTouch: data.AllowDiagonalCornerTouch === true
+    });
     if (!geometryValidation.valid) return geometryValidation;
     
     return { valid: true };
@@ -2110,6 +2126,7 @@ async function importLevel(data) {
     
     const newRows = data.MapSize[0];
     const newCols = data.MapSize[1];
+    allowDiagonalCornerTouch = data.AllowDiagonalCornerTouch === true;
     const hasDiagonalArrow = data.Arrows.some(a => isDiagonalDirection(a.Dir));
     if (hasDiagonalArrow) {
         const diagonalInput = document.getElementById('input-allow-diagonal');
